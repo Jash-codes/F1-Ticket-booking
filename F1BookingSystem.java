@@ -6,14 +6,13 @@ import java.awt.event.MouseEvent;
 import java.awt.image.BufferedImage;
 import java.io.File;
 import java.io.IOException;
+import java.sql.*;
 import java.text.NumberFormat;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 import javax.imageio.ImageIO;
 import javax.swing.*;
 import javax.swing.border.EmptyBorder;
@@ -23,11 +22,12 @@ import javax.swing.border.EmptyBorder;
 // =================================================================================
 public class F1BookingSystem {
     public static void main(String[] args) {
+        DataManager.initializeDatabase();
         SwingUtilities.invokeLater(() -> {
             try {
                 UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
             } catch (Exception e) {
-                System.out.println("System L&F not found, using default.");
+                System.out.println("System L&F not found.");
             }
             new AuthFrame().setVisible(true);
         });
@@ -38,54 +38,34 @@ public class F1BookingSystem {
 // 2. Data Models
 // =================================================================================
 class User {
-    private final String name;
-    private final String email;
-    private final String password;
+    private String name, email, password;
     private double walletBalanceUSD;
-    private final List<Ticket> bookedTickets = new ArrayList<>();
-
     public User(String name, String email, String password, double initialWallet) {
-        this.name = name;
-        this.email = email;
-        this.password = password;
-        this.walletBalanceUSD = initialWallet;
+        this.name = name; this.email = email; this.password = password; this.walletBalanceUSD = initialWallet;
     }
-
     public String getName() { return name; }
     public String getEmail() { return email; }
-    public String getPassword() { return password; }
     public double getWalletBalanceUSD() { return walletBalanceUSD; }
-    public void deductFromWallet(double amountUSD) { this.walletBalanceUSD -= amountUSD; }
-    public void addBookedTicket(Ticket ticket) { bookedTickets.add(ticket); }
-    public List<Ticket> getBookedTickets() { return bookedTickets; }
+    public void setWalletBalanceUSD(double balance) { this.walletBalanceUSD = balance; }
+    public String getPassword() { return password; }
 }
 
 class Ticket {
-    private final String grandPrixName;
-    private final String seatingAreaName;
-    private final int ticketCount;
-    private final double totalPriceUSD;
-    private final Date bookingDate;
-    private final String ticketId;
-
-    public Ticket(String gpName, String areaName, int count, double price) {
-        this.grandPrixName = gpName;
-        this.seatingAreaName = areaName;
-        this.ticketCount = count;
-        this.totalPriceUSD = price;
-        this.bookingDate = new Date();
-        this.ticketId = "F1TKT-" + System.currentTimeMillis();
+    private String ticketId, userEmail, grandPrixName, seatingAreaName;
+    private int ticketCount;
+    private double totalPriceUSD;
+    private Date bookingDate;
+    public Ticket(String id, String email, String gpName, String areaName, int count, double price, Date date) {
+        this.ticketId = id; this.userEmail = email; this.grandPrixName = gpName; this.seatingAreaName = areaName;
+        this.ticketCount = count; this.totalPriceUSD = price; this.bookingDate = date;
     }
-    
     public String getGrandPrixName() { return grandPrixName; }
     public String getSeatingAreaName() { return seatingAreaName; }
     public int getTicketCount() { return ticketCount; }
     public double getTotalPriceUSD() { return totalPriceUSD; }
     public Date getBookingDate() { return bookingDate; }
     public String getTicketId() { return ticketId; }
-
-    @Override
-    public String toString() {
+    @Override public String toString() {
         SimpleDateFormat sdf = new SimpleDateFormat("dd MMM yyyy");
         return String.format("<html><b>%s</b><br>%d x %s<br>Booked on: %s - Price: %s</html>",
                 grandPrixName, ticketCount, seatingAreaName, sdf.format(bookingDate),
@@ -94,188 +74,312 @@ class Ticket {
 }
 
 class SeatingArea {
-    private final String name;
-    private final double priceINR;
-
-    public SeatingArea(String name, double priceINR) { this.name = name; this.priceINR = priceINR; }
+    private String uniqueId, gpName, name;
+    private double priceINR;
+    private int capacity, soldTickets;
+    public SeatingArea(String id, String gp, String n, double p, int cap, int sold) {
+        this.uniqueId = id; this.gpName = gp; this.name = n; this.priceINR = p; this.capacity = cap; this.soldTickets = sold;
+    }
+    public String getUniqueId() { return uniqueId; }
+    public String getGpName() { return gpName; }
     public String getName() { return name; }
     public double getPriceINR() { return priceINR; }
-    @Override public String toString() { return String.format("%s - ₹%,.0f", name, priceINR); }
+    public int getTicketsLeft() { return capacity - soldTickets; }
+    public boolean isSoldOut() { return getTicketsLeft() <= 0; }
+    @Override public String toString() {
+        if (isSoldOut()) return String.format("%s - (SOLD OUT)", name);
+        return String.format("%s - ₹%,.0f (%d left)", name, priceINR, getTicketsLeft());
+    }
 }
 
 class GrandPrix {
-    private final String name;
-    private final String imagePath;
-    private final List<SeatingArea> seatingAreas = new ArrayList<>();
-
-    public GrandPrix(String name, String imagePath) { this.name = name; this.imagePath = imagePath; }
-    public void addArea(String name, double price) { this.seatingAreas.add(new SeatingArea(name, price)); }
+    private String name, country, imagePath;
+    public GrandPrix(String n, String c, String path) { this.name = n; this.country = c; this.imagePath = path; }
     public String getName() { return name; }
+    public String getCountry() { return country; }
     public String getImagePath() { return imagePath; }
-    public List<SeatingArea> getSeatingAreas() { return seatingAreas; }
     @Override public String toString() { return name; }
 }
 
 // =================================================================================
-// 3. Data Manager (COMPREHENSIVELY UPDATED)
+// 3. Data Manager (for SQLite Database)
 // =================================================================================
 class DataManager {
-    private static final Map<String, User> users = new HashMap<>();
-    private static final List<GrandPrix> grandPrixList = new ArrayList<>();
+    private static final String DB_URL = "jdbc:sqlite:f1_booking.db";
 
-    static {
-        loadUsers();
-        loadGrandPrixData();
+    public static Connection connect() {
+        Connection conn = null;
+        try {
+            Class.forName("org.sqlite.JDBC");
+            conn = DriverManager.getConnection(DB_URL);
+        } catch (SQLException | ClassNotFoundException e) {
+            e.printStackTrace();
+        }
+        return conn;
     }
 
-    private static void loadUsers() {
-        users.put("lewis@f1.com", new User("Lewis H.", "lewis@f1.com", "44", 1000000));
+    public static void initializeDatabase() {
+        String createUserTable = "CREATE TABLE IF NOT EXISTS users (email TEXT PRIMARY KEY, name TEXT NOT NULL, password TEXT NOT NULL, wallet_balance REAL NOT NULL);";
+        String createSeatingAreaTable = "CREATE TABLE IF NOT EXISTS seating_areas (unique_id TEXT PRIMARY KEY, gp_name TEXT NOT NULL, area_name TEXT NOT NULL, price_inr REAL NOT NULL, capacity INTEGER NOT NULL, sold_tickets INTEGER NOT NULL);";
+        String createTicketsTable = "CREATE TABLE IF NOT EXISTS tickets (ticket_id TEXT PRIMARY KEY, user_email TEXT NOT NULL, gp_name TEXT NOT NULL, seating_area TEXT NOT NULL, ticket_count INTEGER NOT NULL, total_price_usd REAL NOT NULL, booking_date INTEGER NOT NULL, FOREIGN KEY (user_email) REFERENCES users (email));";
+
+        try (Connection conn = connect(); Statement stmt = conn.createStatement()) {
+            stmt.execute(createUserTable);
+            stmt.execute(createSeatingAreaTable);
+            stmt.execute(createTicketsTable);
+            ResultSet rs = stmt.executeQuery("SELECT COUNT(*) FROM seating_areas");
+            if (rs.getInt(1) == 0) {
+                System.out.println("Database empty. Populating initial data...");
+                populateInitialData(conn);
+                System.out.println("Data populated.");
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
     }
 
-    private static void loadGrandPrixData() {
-        GrandPrix abuDhabi = new GrandPrix("Abu Dhabi Grand Prix", "tracks/abu dhabi track.jpg");
-        abuDhabi.addArea("Main Grandstand", 350000);
-        abuDhabi.addArea("North Straight", 180000);
-        abuDhabi.addArea("North Grandstand", 185000);
-        abuDhabi.addArea("West Straight", 195000);
-        abuDhabi.addArea("West Grandstand", 205000);
-        abuDhabi.addArea("Marina Grandstand", 250000);
-        abuDhabi.addArea("South Grandstand", 210000);
-        abuDhabi.addArea("General Admission", 80000);
-        grandPrixList.add(abuDhabi);
+    private static void populateInitialData(Connection conn) throws SQLException {
+        // --- COMPREHENSIVELY UPDATED ---
+        addSeatingArea(conn, "Abu Dhabi Grand Prix", "Main Grandstand", 350000, 5000);
+        addSeatingArea(conn, "Abu Dhabi Grand Prix", "North Straight", 180000, 3000);
+        addSeatingArea(conn, "Abu Dhabi Grand Prix", "North Grandstand", 185000, 3500);
+        addSeatingArea(conn, "Abu Dhabi Grand Prix", "West Straight", 195000, 2500);
+        addSeatingArea(conn, "Abu Dhabi Grand Prix", "West Grandstand", 205000, 4000);
+        addSeatingArea(conn, "Abu Dhabi Grand Prix", "Marina Grandstand", 250000, 3000);
+        addSeatingArea(conn, "Abu Dhabi Grand Prix", "South Grandstand", 210000, 4500);
+        addSeatingArea(conn, "Abu Dhabi Grand Prix", "General Admission", 80000, 10000);
 
-        GrandPrix australia = new GrandPrix("Australian Grand Prix", "tracks/australia track.jpg");
-        australia.addArea("Stewart Grandstand", 115000);
-        australia.addArea("Hill Grandstand", 85000);
-        australia.addArea("Ricciardo Grandstand", 95000);
-        australia.addArea("Jones Grandstand", 90000);
-        australia.addArea("Moss Grandstand", 90000);
-        australia.addArea("Fangio Grandstand", 120000);
-        australia.addArea("Senna Grandstand", 110000);
-        australia.addArea("Prost Grandstand", 112000);
-        australia.addArea("Lauda Grandstand", 98000);
-        australia.addArea("Schumacher Grandstand", 92000);
-        australia.addArea("Webber Grandstand", 88000);
-        australia.addArea("Vettel Grandstand", 88000);
-        australia.addArea("Waite Grandstand", 82000);
-        australia.addArea("Clark Grandstand", 83000);
-        australia.addArea("Button Grandstand", 84000);
-        grandPrixList.add(australia);
+        addSeatingArea(conn, "Australian Grand Prix", "Stewart Grandstand", 115000, 1500);
+        addSeatingArea(conn, "Australian Grand Prix", "Hill Grandstand", 85000, 2000);
+        addSeatingArea(conn, "Australian Grand Prix", "Ricciardo Grandstand", 95000, 1800);
+        addSeatingArea(conn, "Australian Grand Prix", "Jones Grandstand", 90000, 1200);
+        addSeatingArea(conn, "Australian Grand Prix", "Moss Grandstand", 90000, 1200);
+        addSeatingArea(conn, "Australian Grand Prix", "Fangio Grandstand", 120000, 2500);
+        addSeatingArea(conn, "Australian Grand Prix", "Senna Grandstand", 110000, 1000);
+        addSeatingArea(conn, "Australian Grand Prix", "Prost Grandstand", 112000, 1000);
+        addSeatingArea(conn, "Australian Grand Prix", "Lauda Grandstand", 98000, 1300);
+        addSeatingArea(conn, "Australian Grand Prix", "Schumacher Grandstand", 92000, 1400);
+        addSeatingArea(conn, "Australian Grand Prix", "Webber Grandstand", 88000, 1600);
+        addSeatingArea(conn, "Australian Grand Prix", "Vettel Grandstand", 88000, 1600);
+        addSeatingArea(conn, "Australian Grand Prix", "Waite Grandstand", 82000, 1700);
+        addSeatingArea(conn, "Australian Grand Prix", "Clark Grandstand", 83000, 1700);
+        addSeatingArea(conn, "Australian Grand Prix", "Button Grandstand", 84000, 1700);
         
-        GrandPrix azerbaijan = new GrandPrix("Azerbaijan Grand Prix", "tracks/azerbaijan track.jpg");
-        azerbaijan.addArea("Absheron (Main)", 280000);
-        azerbaijan.addArea("Champions Club", 250000);
-        azerbaijan.addArea("Zafar Grandstand", 160000);
-        azerbaijan.addArea("Khazar Grandstand", 155000);
-        azerbaijan.addArea("Icheri Sheher", 150000);
-        azerbaijan.addArea("Sahil Grandstand", 145000);
-        azerbaijan.addArea("Bulvar Grandstand", 130000);
-        azerbaijan.addArea("Mugham Grandstand", 125000);
-        azerbaijan.addArea("Giz Galasi", 120000);
-        azerbaijan.addArea("Marine Grandstand", 115000);
-        azerbaijan.addArea("Azneft Grandstand", 110000);
-        azerbaijan.addArea("General Admission", 60000);
-        grandPrixList.add(azerbaijan);
+        addSeatingArea(conn, "Azerbaijan Grand Prix", "Absheron (Main)", 280000, 4000);
+        addSeatingArea(conn, "Azerbaijan Grand Prix", "Champions Club", 250000, 500);
+        addSeatingArea(conn, "Azerbaijan Grand Prix", "Zafar Grandstand", 160000, 1000);
+        addSeatingArea(conn, "Azerbaijan Grand Prix", "Khazar Grandstand", 155000, 1200);
+        addSeatingArea(conn, "Azerbaijan Grand Prix", "Icheri Sheher", 150000, 800);
+        addSeatingArea(conn, "Azerbaijan Grand Prix", "Sahil Grandstand", 145000, 1500);
+        addSeatingArea(conn, "Azerbaijan Grand Prix", "Bulvar Grandstand", 130000, 1500);
+        addSeatingArea(conn, "Azerbaijan Grand Prix", "Mugham Grandstand", 125000, 1000);
+        addSeatingArea(conn, "Azerbaijan Grand Prix", "Giz Galasi", 120000, 1000);
+        addSeatingArea(conn, "Azerbaijan Grand Prix", "Marine Grandstand", 115000, 1000);
+        addSeatingArea(conn, "Azerbaijan Grand Prix", "Azneft Grandstand", 110000, 1000);
+        addSeatingArea(conn, "Azerbaijan Grand Prix", "Philarmoniya", 100000, 900);
+        addSeatingArea(conn, "Azerbaijan Grand Prix", "General Admission", 60000, 8000);
         
-        GrandPrix dutch = new GrandPrix("Dutch Grand Prix", "tracks/dutch track.jpg");
-        dutch.addArea("Pit Grandstand", 450000);
-        dutch.addArea("Paddock Club", 1200000);
-        dutch.addArea("Hairpin Grandstand 1 & 2", 210000);
-        dutch.addArea("Arena Grandstand 1", 250000);
-        dutch.addArea("Champions Club", 950000);
-        grandPrixList.add(dutch);
+        addSeatingArea(conn, "Dutch Grand Prix", "Pit Grandstand", 450000, 3000);
+        addSeatingArea(conn, "Dutch Grand Prix", "Paddock Club", 1200000, 200);
+        addSeatingArea(conn, "Dutch Grand Prix", "Hairpin Grandstand 1 & 2", 210000, 4000);
+        addSeatingArea(conn, "Dutch Grand Prix", "Arena Grandstand 1", 250000, 5000);
+        addSeatingArea(conn, "Dutch Grand Prix", "Champions Club", 950000, 400);
 
-        GrandPrix italy = new GrandPrix("Italian Grand Prix (Monza)", "tracks/italy track.jpg");
-        italy.addArea("Main Straight (1)", 420000);
-        italy.addArea("Laterale Destra (4)", 380000);
-        italy.addArea("Piscina (5)", 210000);
-        italy.addArea("Alta Velocita (6a, 6b, 6c)", 250000);
-        italy.addArea("Prima Variante (8a, 8b)", 220000);
-        italy.addArea("Seconda Variante (9, 10)", 195000);
-        italy.addArea("Variante Ascari (16, 19)", 175000);
-        italy.addArea("Parabolica (22, 23a, 23b)", 190000);
-        italy.addArea("General Admission", 90000);
-        grandPrixList.add(italy);
+        addSeatingArea(conn, "Italian Grand Prix", "Main Straight (1)", 420000, 3000);
+        addSeatingArea(conn, "Italian Grand Prix", "Laterale Destra (4)", 380000, 2500);
+        addSeatingArea(conn, "Italian Grand Prix", "Piscina (5)", 210000, 1500);
+        addSeatingArea(conn, "Italian Grand Prix", "Alta Velocita (6a-c)", 250000, 2000);
+        addSeatingArea(conn, "Italian Grand Prix", "Prima Variante (8a-b)", 220000, 2200);
+        addSeatingArea(conn, "Italian Grand Prix", "Seconda Variante (9-10)", 195000, 2800);
+        addSeatingArea(conn, "Italian Grand Prix", "Variante Ascari (16-19)", 175000, 3000);
+        addSeatingArea(conn, "Italian Grand Prix", "Parabolica (22-23b)", 190000, 3500);
+        addSeatingArea(conn, "Italian Grand Prix", "General Admission", 90000, 15000);
 
-        GrandPrix lasVegas = new GrandPrix("Las Vegas Grand Prix", "tracks/las vegas track.jpg");
-        lasVegas.addArea("Heineken Silver (Main)", 800000);
-        lasVegas.addArea("Sphere Zone (SG1-8)", 650000);
-        lasVegas.addArea("T-Mobile Zone", 600000);
-        lasVegas.addArea("West Harmon Zone", 500000);
-        lasVegas.addArea("Caesar's Palace Experience", 950000);
-        lasVegas.addArea("Flamingo General Admission", 250000);
-        grandPrixList.add(lasVegas);
+        addSeatingArea(conn, "Las Vegas Grand Prix", "Heineken Silver (Main)", 800000, 6000);
+        addSeatingArea(conn, "Las Vegas Grand Prix", "Sphere Zone (SG1-8)", 650000, 8000);
+        addSeatingArea(conn, "Las Vegas Grand Prix", "T-Mobile Zone", 600000, 7000);
+        addSeatingArea(conn, "Las Vegas Grand Prix", "West Harmon Zone", 500000, 4000);
+        addSeatingArea(conn, "Las Vegas Grand Prix", "Caesar's Palace Experience", 950000, 1000);
+        addSeatingArea(conn, "Las Vegas Grand Prix", "Flamingo General Admission", 250000, 5000);
         
-        GrandPrix qatar = new GrandPrix("Qatar Grand Prix", "tracks/qatar track.jpg");
-        qatar.addArea("Main Grandstand", 300000);
-        qatar.addArea("North Grandstand", 220000);
-        qatar.addArea("T2 Grandstand", 190000);
-        qatar.addArea("T3 Grandstand", 195000);
-        qatar.addArea("T16 Grandstand", 180000);
-        qatar.addArea("General Admission", 95000);
-        grandPrixList.add(qatar);
+        addSeatingArea(conn, "Qatar Grand Prix", "Main Grandstand", 300000, 6000);
+        addSeatingArea(conn, "Qatar Grand Prix", "North Grandstand", 220000, 4000);
+        addSeatingArea(conn, "Qatar Grand Prix", "T2 Grandstand", 190000, 2000);
+        addSeatingArea(conn, "Qatar Grand Prix", "T3 Grandstand", 195000, 2000);
+        addSeatingArea(conn, "Qatar Grand Prix", "T16 Grandstand", 180000, 2500);
+        addSeatingArea(conn, "Qatar Grand Prix", "General Admission", 95000, 12000);
         
-        GrandPrix silverstone = new GrandPrix("British Grand Prix (Silverstone)", "tracks/silverstone track.jpg");
-        silverstone.addArea("Hamilton Straight A/B", 550000);
-        silverstone.addArea("Abbey A/B", 380000);
-        silverstone.addArea("Farm Curve", 370000);
-        silverstone.addArea("Village A/B", 360000);
-        silverstone.addArea("The Loop", 355000);
-        silverstone.addArea("Aintree", 350000);
-        silverstone.addArea("Wellington Straight", 340000);
-        silverstone.addArea("Brooklands", 330000);
-        silverstone.addArea("Luffield", 325000);
-        silverstone.addArea("Woodcote A/B", 320000);
-        silverstone.addArea("National Pits Straight", 480000);
-        silverstone.addArea("Copse A/B/C", 310000);
-        silverstone.addArea("Becketts", 350000);
-        silverstone.addArea("Chapel", 345000);
-        silverstone.addArea("Stowe A/B/C", 290000);
-        silverstone.addArea("Vale / Club", 420000);
-        silverstone.addArea("General Admission", 150000);
-        grandPrixList.add(silverstone);
+        addSeatingArea(conn, "British Grand Prix", "Hamilton Straight A/B", 550000, 7000);
+        addSeatingArea(conn, "British Grand Prix", "Abbey A/B", 380000, 4000);
+        addSeatingArea(conn, "British Grand Prix", "Farm Curve", 370000, 3000);
+        addSeatingArea(conn, "British Grand Prix", "Village A/B", 360000, 4500);
+        addSeatingArea(conn, "British Grand Prix", "The Loop", 355000, 2500);
+        addSeatingArea(conn, "British Grand Prix", "Aintree", 350000, 2500);
+        addSeatingArea(conn, "British Grand Prix", "Wellington Straight", 340000, 3000);
+        addSeatingArea(conn, "British Grand Prix", "Luffield", 325000, 3200);
+        addSeatingArea(conn, "British Grand Prix", "Woodcote A/B", 320000, 3500);
+        addSeatingArea(conn, "British Grand Prix", "National Pits Straight", 480000, 2000);
+        addSeatingArea(conn, "British Grand Prix", "Copse A/B/C", 310000, 4000);
+        addSeatingArea(conn, "British Grand Prix", "Becketts", 350000, 3800);
+        addSeatingArea(conn, "British Grand Prix", "Stowe A/B/C", 290000, 5000);
+        addSeatingArea(conn, "British Grand Prix", "Vale / Club", 420000, 4200);
+        addSeatingArea(conn, "British Grand Prix", "General Admission", 150000, 20000);
         
-        GrandPrix singapore = new GrandPrix("Singapore Grand Prix", "tracks/singapore track.jpg");
-        singapore.addArea("Super Pit Grandstand", 650000);
-        singapore.addArea("Pit Grandstand", 450000);
-        singapore.addArea("Turn 1 Grandstand", 250000);
-        singapore.addArea("Turn 2 Grandstand", 240000);
-        singapore.addArea("Republic Grandstand", 220000);
-        singapore.addArea("Raffles Grandstand", 210000);
-        singapore.addArea("Bayfront Grandstand", 190000);
-        singapore.addArea("Padang Grandstand", 180000);
-        singapore.addArea("Connaught Grandstand", 160000);
-        singapore.addArea("Orange @ Empress", 150000);
-        grandPrixList.add(singapore);
+        addSeatingArea(conn, "Singapore Grand Prix", "Super Pit Grandstand", 650000, 2000);
+        addSeatingArea(conn, "Singapore Grand Prix", "Pit Grandstand", 450000, 4000);
+        addSeatingArea(conn, "Singapore Grand Prix", "Turn 1 Grandstand", 250000, 3000);
+        addSeatingArea(conn, "Singapore Grand Prix", "Turn 2 Grandstand", 240000, 3000);
+        addSeatingArea(conn, "Singapore Grand Prix", "Republic Grandstand", 220000, 2500);
+        addSeatingArea(conn, "Singapore Grand Prix", "Raffles Grandstand", 210000, 2500);
+        addSeatingArea(conn, "Singapore Grand Prix", "Bayfront Grandstand", 190000, 3500);
+        addSeatingArea(conn, "Singapore Grand Prix", "Padang Grandstand", 180000, 4000);
+        addSeatingArea(conn, "Singapore Grand Prix", "Connaught Grandstand", 160000, 3200);
+        addSeatingArea(conn, "Singapore Grand Prix", "Orange @ Empress", 150000, 2800);
+        addSeatingArea(conn, "Singapore Grand Prix", "Promenade Grandstand", 170000, 2000);
         
-        GrandPrix usa = new GrandPrix("United States Grand Prix", "tracks/us track.jpg");
-        usa.addArea("Main Grandstand", 480000);
-        usa.addArea("Turn 1 Grandstand", 350000);
-        usa.addArea("Turn 4 Grandstand", 290000);
-        usa.addArea("Turn 9 Grandstand", 285000);
-        usa.addArea("Turn 12 Grandstand", 280000);
-        usa.addArea("Turn 15 Grandstand", 320000);
-        usa.addArea("Turn 19 Grandstand", 310000);
-        usa.addArea("General Admission", 160000);
-        grandPrixList.add(usa);
+        addSeatingArea(conn, "United States Grand Prix", "Main Grandstand", 480000, 6000);
+        addSeatingArea(conn, "United States Grand Prix", "Turn 1 Grandstand", 350000, 4000);
+        addSeatingArea(conn, "United States Grand Prix", "Turn 4 Grandstand", 290000, 3500);
+        addSeatingArea(conn, "United States Grand Prix", "Turn 9 Grandstand", 285000, 3000);
+        addSeatingArea(conn, "United States Grand Prix", "Turn 12 Grandstand", 280000, 3200);
+        addSeatingArea(conn, "United States Grand Prix", "Turn 13 Grandstand", 270000, 2000);
+        addSeatingArea(conn, "United States Grand Prix", "Turn 15 Grandstand", 320000, 4500);
+        addSeatingArea(conn, "United States Grand Prix", "Turn 19 Grandstand", 310000, 3800);
+        addSeatingArea(conn, "United States Grand Prix", "Turn 19B Grandstand", 300000, 1500);
+        addSeatingArea(conn, "United States Grand Prix", "General Admission", 160000, 18000);
+    }
+    
+    private static void addSeatingArea(Connection conn, String gpName, String areaName, double price, int capacity) throws SQLException {
+        String sql = "INSERT INTO seating_areas(unique_id, gp_name, area_name, price_inr, capacity, sold_tickets) VALUES(?,?,?,?,?,?)";
+        try (PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            pstmt.setString(1, gpName + "|" + areaName);
+            pstmt.setString(2, gpName);
+            pstmt.setString(3, areaName);
+            pstmt.setDouble(4, price);
+            pstmt.setInt(5, capacity);
+            pstmt.setInt(6, 0);
+            pstmt.executeUpdate();
+        }
     }
 
     public static User authenticateUser(String email, String password) {
-        User user = users.get(email.toLowerCase());
-        return (user != null && user.getPassword().equals(password)) ? user : null;
+        String sql = "SELECT * FROM users WHERE email = ? AND password = ?";
+        try (Connection conn = connect(); PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            pstmt.setString(1, email);
+            pstmt.setString(2, password);
+            ResultSet rs = pstmt.executeQuery();
+            if (rs.next()) {
+                return new User(rs.getString("name"), rs.getString("email"), rs.getString("password"), rs.getDouble("wallet_balance"));
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+        return null;
     }
-    public static boolean isEmailTaken(String email) { return users.containsKey(email.toLowerCase()); }
-    public static User registerUser(String name, String email, String password) { 
-        if(isEmailTaken(email)) return null;
-        User newUser = new User(name, email, password, 1000000);
-        users.put(email.toLowerCase(), newUser);
-        return newUser;
+
+    public static boolean registerUser(String name, String email, String password) {
+        String sql = "INSERT INTO users(name, email, password, wallet_balance) VALUES(?,?,?,?)";
+        try (Connection conn = connect(); PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            pstmt.setString(1, name);
+            pstmt.setString(2, email);
+            pstmt.setString(3, password);
+            pstmt.setDouble(4, 1000000.00);
+            pstmt.executeUpdate();
+            return true;
+        } catch (SQLException e) {
+            return false;
+        }
     }
-    public static List<GrandPrix> getAllGrandPrix() { return grandPrixList; }
+
+    public static List<GrandPrix> getAllGrandPrix() {
+        List<GrandPrix> gpList = new ArrayList<>();
+        gpList.add(new GrandPrix("Abu Dhabi Grand Prix", "UAE", "tracks/abu dhabi track.jpg"));
+        gpList.add(new GrandPrix("Australian Grand Prix", "Australia", "tracks/australia track.jpg"));
+        gpList.add(new GrandPrix("Azerbaijan Grand Prix", "Azerbaijan", "tracks/azerbaijan track.jpg"));
+        gpList.add(new GrandPrix("Dutch Grand Prix", "Netherlands", "tracks/dutch track.jpg"));
+        gpList.add(new GrandPrix("Italian Grand Prix", "Italy", "tracks/italy track.jpg"));
+        gpList.add(new GrandPrix("Las Vegas Grand Prix", "USA", "tracks/las vegas track.jpg"));
+        gpList.add(new GrandPrix("Qatar Grand Prix", "Qatar", "tracks/qatar track.jpg"));
+        gpList.add(new GrandPrix("British Grand Prix", "UK", "tracks/silverstone track.jpg"));
+        gpList.add(new GrandPrix("Singapore Grand Prix", "Singapore", "tracks/singapore track.jpg"));
+        gpList.add(new GrandPrix("United States Grand Prix", "USA", "tracks/us track.jpg"));
+        return gpList;
+    }
+
+    public static List<SeatingArea> getSeatingAreasForGP(String gpName) {
+        String sql = "SELECT * FROM seating_areas WHERE gp_name = ?";
+        List<SeatingArea> areas = new ArrayList<>();
+        try (Connection conn = connect(); PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            pstmt.setString(1, gpName);
+            ResultSet rs = pstmt.executeQuery();
+            while (rs.next()) {
+                areas.add(new SeatingArea(rs.getString("unique_id"), rs.getString("gp_name"), rs.getString("area_name"), rs.getDouble("price_inr"), rs.getInt("capacity"), rs.getInt("sold_tickets")));
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+        return areas;
+    }
+
+    public static List<Ticket> getTicketsForUser(String email) {
+        String sql = "SELECT * FROM tickets WHERE user_email = ?";
+        List<Ticket> tickets = new ArrayList<>();
+        try (Connection conn = connect(); PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            pstmt.setString(1, email);
+            ResultSet rs = pstmt.executeQuery();
+            while (rs.next()) {
+                tickets.add(new Ticket(rs.getString("ticket_id"), rs.getString("user_email"), rs.getString("gp_name"), rs.getString("seating_area"), rs.getInt("ticket_count"), rs.getDouble("total_price_usd"), new Date(rs.getLong("booking_date"))));
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+        return tickets;
+    }
+
+    public static boolean bookTicket(User user, SeatingArea area, int count, double totalUsd) {
+        String insertTicketSQL = "INSERT INTO tickets(ticket_id, user_email, gp_name, seating_area, ticket_count, total_price_usd, booking_date) VALUES(?,?,?,?,?,?,?)";
+        String updateUserSQL = "UPDATE users SET wallet_balance = ? WHERE email = ?";
+        String updateAreaSQL = "UPDATE seating_areas SET sold_tickets = sold_tickets + ? WHERE unique_id = ?";
+        Connection conn = null;
+        try {
+            conn = connect();
+            conn.setAutoCommit(false);
+            try (PreparedStatement pstmt = conn.prepareStatement(insertTicketSQL)) {
+                pstmt.setString(1, "F1TKT-" + System.currentTimeMillis());
+                pstmt.setString(2, user.getEmail());
+                pstmt.setString(3, area.getGpName());
+                pstmt.setString(4, area.getName());
+                pstmt.setInt(5, count);
+                pstmt.setDouble(6, totalUsd);
+                pstmt.setLong(7, new Date().getTime());
+                pstmt.executeUpdate();
+            }
+            try (PreparedStatement pstmt = conn.prepareStatement(updateUserSQL)) {
+                double newBalance = user.getWalletBalanceUSD() - totalUsd;
+                pstmt.setDouble(1, newBalance);
+                pstmt.setString(2, user.getEmail());
+                pstmt.executeUpdate();
+                user.setWalletBalanceUSD(newBalance);
+            }
+            try (PreparedStatement pstmt = conn.prepareStatement(updateAreaSQL)) {
+                pstmt.setInt(1, count);
+                pstmt.setString(2, area.getUniqueId());
+                pstmt.executeUpdate();
+            }
+            conn.commit();
+            return true;
+        } catch (SQLException e) {
+            if (conn != null) { try { conn.rollback(); } catch (SQLException ex) { ex.printStackTrace(); } }
+            e.printStackTrace();
+            return false;
+        } finally {
+            if (conn != null) { try { conn.setAutoCommit(true); conn.close(); } catch (SQLException ex) { ex.printStackTrace(); } }
+        }
+    }
 }
 
 // =================================================================================
-// 4. GUI - Authentication Frame (Button Color UPDATED)
+// 4. GUI Frames
 // =================================================================================
 class AuthFrame extends JFrame {
     private CardLayout cardLayout = new CardLayout();
@@ -300,62 +404,44 @@ class AuthFrame extends JFrame {
 
     private JPanel createLoginPanel() {
         JPanel panel = createBasePanel("Login");
-        
         panel.add(createLabel("Email Address:"));
         loginEmailField = createTextField();
         addPlaceholder(loginEmailField, "your.email@example.com");
         panel.add(loginEmailField);
-        
         panel.add(Box.createVerticalStrut(15));
-        
         panel.add(createLabel("Password:"));
         loginPasswordField = createPasswordField();
         addPlaceholder(loginPasswordField, "Password");
         panel.add(loginPasswordField);
-        
         panel.add(Box.createVerticalStrut(30));
-        
         JButton loginButton = createButton("LOGIN", e -> performLogin());
         panel.add(loginButton);
-        
         panel.add(Box.createVerticalStrut(15));
-        
         panel.add(createLink("Don't have an account? Sign Up", "SIGNUP"));
-        
         return panel;
     }
     
     private JPanel createSignupPanel() {
         JPanel panel = createBasePanel("Signup");
-        
         panel.add(createLabel("Full Name:"));
         suNameField = createTextField();
         addPlaceholder(suNameField, "Your Name");
         panel.add(suNameField);
-        
         panel.add(Box.createVerticalStrut(15));
-        
         panel.add(createLabel("Email Address:"));
         suEmailField = createTextField();
         addPlaceholder(suEmailField, "your.email@example.com");
         panel.add(suEmailField);
-        
         panel.add(Box.createVerticalStrut(15));
-        
         panel.add(createLabel("Password:"));
         suPasswordField = createPasswordField();
         addPlaceholder(suPasswordField, "Password");
         panel.add(suPasswordField);
-        
         panel.add(Box.createVerticalStrut(30));
-        
         JButton signupButton = createButton("SIGN UP", e -> performSignup());
         panel.add(signupButton);
-        
         panel.add(Box.createVerticalStrut(15));
-        
         panel.add(createLink("Already have an account? Login", "LOGIN"));
-        
         return panel;
     }
 
@@ -364,19 +450,16 @@ class AuthFrame extends JFrame {
         panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
         panel.setBackground(DARK_BG);
         panel.setBorder(new EmptyBorder(40, 40, 40, 40));
-
         JLabel header = new JLabel("F1 2025 Tickets", SwingConstants.CENTER);
         header.setFont(new Font("Arial", Font.BOLD, 32));
         header.setForeground(Color.WHITE);
         header.setAlignmentX(Component.CENTER_ALIGNMENT);
         panel.add(header);
-
         JLabel subHeader = new JLabel(subTitle, SwingConstants.CENTER);
         subHeader.setFont(new Font("Arial", Font.PLAIN, 18));
         subHeader.setForeground(Color.LIGHT_GRAY);
         subHeader.setAlignmentX(Component.CENTER_ALIGNMENT);
         panel.add(subHeader);
-
         panel.add(Box.createVerticalStrut(30));
         return panel;
     }
@@ -384,16 +467,14 @@ class AuthFrame extends JFrame {
     private void performLogin() { 
         String email = loginEmailField.getText();
         String password = new String(loginPasswordField.getPassword());
-        
         if (email.equals("your.email@example.com") || password.equals("Password")) {
              JOptionPane.showMessageDialog(this, "Please enter your credentials.", "Login Error", JOptionPane.ERROR_MESSAGE);
              return;
         }
-
         User user = DataManager.authenticateUser(email, password);
         if (user != null) {
             dispose();
-            new MainFrame(user).setVisible(true);
+            new CalendarFrame(user).setVisible(true);
         } else {
             JOptionPane.showMessageDialog(this, "Invalid credentials.", "Login Failed", JOptionPane.ERROR_MESSAGE);
         }
@@ -403,15 +484,12 @@ class AuthFrame extends JFrame {
         String name = suNameField.getText();
         String email = suEmailField.getText();
         String password = new String(suPasswordField.getPassword());
-        
         if (name.isEmpty() || email.isEmpty() || password.isEmpty() || 
             name.equals("Your Name") || email.equals("your.email@example.com") || password.equals("Password")) {
              JOptionPane.showMessageDialog(this, "All fields are required.", "Signup Error", JOptionPane.ERROR_MESSAGE);
              return;
         }
-        
-        User newUser = DataManager.registerUser(name, email, password);
-        if (newUser != null) {
+        if (DataManager.registerUser(name, email, password)) {
             JOptionPane.showMessageDialog(this, "Registration successful! Please login.", "Success", JOptionPane.INFORMATION_MESSAGE);
             cardLayout.show(mainPanel, "LOGIN");
         } else {
@@ -441,7 +519,7 @@ class AuthFrame extends JFrame {
     private JButton createButton(String text, java.awt.event.ActionListener listener) { 
         JButton b = new JButton(text);
         b.setBackground(F1_RED);
-        b.setForeground(Color.BLACK); // <-- UPDATED
+        b.setForeground(Color.BLACK);
         b.setFont(new Font("SansSerif", Font.BOLD, 16));
         b.setFocusPainted(false);
         b.setAlignmentX(Component.CENTER_ALIGNMENT);
@@ -465,20 +543,14 @@ class AuthFrame extends JFrame {
     public static void addPlaceholder(JTextField field, String placeholder) {
         field.setText(placeholder);
         field.setForeground(Color.GRAY);
-
-        if (field instanceof JPasswordField) {
-            ((JPasswordField) field).setEchoChar((char) 0);
-        }
-
+        if (field instanceof JPasswordField) { ((JPasswordField) field).setEchoChar((char) 0); }
         field.addFocusListener(new FocusAdapter() {
             @Override
             public void focusGained(FocusEvent e) {
                 if (field.getText().equals(placeholder)) {
                     field.setText("");
                     field.setForeground(Color.BLACK);
-                    if (field instanceof JPasswordField) {
-                        ((JPasswordField) field).setEchoChar('•');
-                    }
+                    if (field instanceof JPasswordField) { ((JPasswordField) field).setEchoChar('*'); }
                 }
             }
             @Override
@@ -486,34 +558,63 @@ class AuthFrame extends JFrame {
                 if (field.getText().isEmpty()) {
                     field.setForeground(Color.GRAY);
                     field.setText(placeholder);
-                    if (field instanceof JPasswordField) {
-                        ((JPasswordField) field).setEchoChar((char) 0);
-                    }
+                    if (field instanceof JPasswordField) { ((JPasswordField) field).setEchoChar((char) 0); }
                 }
             }
         });
     }
 }
 
-// =================================================================================
-// 5. GUI - Main Application Frame (Button Color UPDATED)
-// =================================================================================
-class MainFrame extends JFrame {
-    private final User currentUser;
+class CalendarFrame extends JFrame {
+    private User currentUser;
+    public CalendarFrame(User user) {
+        this.currentUser = user;
+        setTitle("F1 2025 Season Calendar");
+        setSize(1200, 800);
+        setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+        setLocationRelativeTo(null);
+        JPanel mainPanel = new JPanel(new BorderLayout(10, 10));
+        mainPanel.setBorder(new EmptyBorder(15, 15, 15, 15));
+        JLabel header = new JLabel("Select a Grand Prix", SwingConstants.CENTER);
+        header.setFont(new Font("Arial", Font.BOLD, 32));
+        mainPanel.add(header, BorderLayout.NORTH);
+        
+        JPanel calendarGrid = new JPanel(new GridLayout(0, 1, 15, 15));
+        List<GrandPrix> allGPs = DataManager.getAllGrandPrix();
+        for (GrandPrix gp : allGPs) {
+            JButton gpButton = new JButton(String.format("<html><div style='text-align: left; padding: 5px;'>%s<br><font size='-1' color='gray'>%s</font></div></html>", gp.getName(), gp.getCountry()));
+            gpButton.setFont(new Font("Arial", Font.BOLD, 18));
+            gpButton.setFocusPainted(false);
+            gpButton.setHorizontalAlignment(SwingConstants.LEFT);
+            gpButton.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+            gpButton.setPreferredSize(new Dimension(100, 70));
+            gpButton.addActionListener(e -> {
+                new BookingFrame(currentUser, gp).setVisible(true);
+            });
+            calendarGrid.add(gpButton);
+        }
+        mainPanel.add(new JScrollPane(calendarGrid), BorderLayout.CENTER);
+        add(mainPanel);
+    }
+}
+
+class BookingFrame extends JFrame {
+    private User currentUser;
+    private GrandPrix currentGP;
     private final double INR_TO_USD_RATE = 0.012;
     private JLabel walletLabel, trackImageLabel, priceLabel;
-    private JComboBox<GrandPrix> gpSelector;
     private JComboBox<SeatingArea> areaSelector;
     private JSpinner ticketSpinner;
     private JTabbedPane tabbedPane;
     private DefaultListModel<Ticket> ticketListModel;
     private JList<Ticket> ticketList;
 
-    public MainFrame(User user) { 
+    public BookingFrame(User user, GrandPrix gp) {
         this.currentUser = user;
-        setTitle("F1 Grand Prix Booking");
+        this.currentGP = gp;
+        setTitle("Booking: " + currentGP.getName());
         setSize(1200, 800);
-        setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+        setDefaultCloseOperation(JFrame.DISPOSE_ON_CLOSE);
         setLocationRelativeTo(null);
         createHeaderPanel();
         tabbedPane = new JTabbedPane();
@@ -521,11 +622,11 @@ class MainFrame extends JFrame {
         tabbedPane.addTab("  Book Tickets  ", createBookingPanel());
         tabbedPane.addTab("  My Bookings  ", createMyBookingsPanel());
         add(tabbedPane, BorderLayout.CENTER);
-        gpSelector.setSelectedIndex(0);
-        updateUIForSelectedGP();
+        updateUI();
         updateMyBookingsTab();
     }
-    private void createHeaderPanel() { 
+
+    private void createHeaderPanel() {
         JPanel headerPanel = new JPanel(new BorderLayout(20, 0));
         headerPanel.setBackground(new Color(30, 30, 30));
         headerPanel.setBorder(new EmptyBorder(10, 20, 10, 20));
@@ -540,9 +641,10 @@ class MainFrame extends JFrame {
         headerPanel.add(walletLabel, BorderLayout.EAST);
         add(headerPanel, BorderLayout.NORTH);
     }
+
     private JComponent createBookingPanel() {
         JSplitPane splitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT);
-        splitPane.setResizeWeight(0.7);
+        splitPane.setResizeWeight(0.65);
         splitPane.setBorder(null);
         splitPane.setDividerSize(5);
         trackImageLabel = new JLabel();
@@ -555,77 +657,87 @@ class MainFrame extends JFrame {
         JPanel controlPanel = new JPanel(new GridBagLayout());
         controlPanel.setBorder(new EmptyBorder(20, 20, 20, 20));
         GridBagConstraints gbc = new GridBagConstraints();
-        gbc.insets = new Insets(8, 5, 8, 5);
+        gbc.insets = new Insets(10, 5, 10, 5);
         gbc.fill = GridBagConstraints.HORIZONTAL;
-        gbc.anchor = GridBagConstraints.NORTH;
+        gbc.anchor = GridBagConstraints.CENTER;
         gbc.gridx = 0; gbc.gridwidth = 2;
-        gbc.gridy = 0; controlPanel.add(createStyledLabel("1. Select Grand Prix"), gbc);
-        gbc.gridy = 1; 
-        gpSelector = new JComboBox<>(DataManager.getAllGrandPrix().toArray(new GrandPrix[0]));
-        gpSelector.addActionListener(e -> updateUIForSelectedGP());
-        controlPanel.add(gpSelector, gbc);
-        gbc.gridy = 2; controlPanel.add(Box.createVerticalStrut(20), gbc);
-        gbc.gridy = 3; controlPanel.add(createStyledLabel("2. Select Seating Area"), gbc);
-        gbc.gridy = 4;
+        
+        gbc.gridy = 0; controlPanel.add(createStyledLabel("1. Select Seating Area"), gbc);
+        gbc.gridy = 1;
         areaSelector = new JComboBox<>();
+        areaSelector.setFont(new Font("SansSerif", Font.PLAIN, 18));
+        areaSelector.setRenderer(new SeatingAreaRenderer());
         areaSelector.addActionListener(e -> updatePrice());
         controlPanel.add(areaSelector, gbc);
-        gbc.gridy = 5; controlPanel.add(Box.createVerticalStrut(20), gbc);
-        gbc.gridy = 6; controlPanel.add(createStyledLabel("3. Number of Tickets"), gbc);
-        gbc.gridy = 7;
+        
+        gbc.gridy = 2; controlPanel.add(Box.createVerticalStrut(20), gbc);
+        
+        gbc.gridy = 3; controlPanel.add(createStyledLabel("2. Number of Tickets"), gbc);
+        gbc.gridy = 4;
         ticketSpinner = new JSpinner(new SpinnerNumberModel(1, 1, 10, 1));
+        ticketSpinner.setFont(new Font("SansSerif", Font.PLAIN, 18));
         ticketSpinner.addChangeListener(e -> updatePrice());
         controlPanel.add(ticketSpinner, gbc);
-        gbc.gridy = 8; gbc.weighty = 1.0; controlPanel.add(new JLabel(), gbc);
-        gbc.gridy = 9; gbc.weighty = 0; gbc.gridwidth = 1;
+
+        gbc.gridy = 5; controlPanel.add(Box.createVerticalStrut(40), gbc);
+
+        gbc.gridy = 6; gbc.gridwidth = 1;
         priceLabel = createStyledLabel("Total: $0.00");
-        priceLabel.setFont(new Font("SansSerif", Font.BOLD, 18));
+        priceLabel.setFont(new Font("SansSerif", Font.BOLD, 22));
         controlPanel.add(priceLabel, gbc);
+        
         gbc.gridx = 1;
         JButton bookButton = new JButton("Book Now");
         bookButton.setBackground(new Color(225, 6, 0));
-        bookButton.setForeground(Color.BLACK); // <-- UPDATED
-        bookButton.setFont(new Font("SansSerif", Font.BOLD, 14));
+        bookButton.setForeground(Color.BLACK);
+        bookButton.setFont(new Font("SansSerif", Font.BOLD, 18));
+        bookButton.setPreferredSize(new Dimension(150, 50));
         bookButton.addActionListener(e -> processBooking());
         controlPanel.add(bookButton, gbc);
+
         splitPane.setRightComponent(controlPanel);
         return splitPane;
     }
+
     private JComponent createMyBookingsPanel() {
         JPanel panel = new JPanel(new BorderLayout(10, 10));
         panel.setBorder(new EmptyBorder(10, 10, 10, 10));
-        
         ticketListModel = new DefaultListModel<>();
         ticketList = new JList<>(ticketListModel);
         ticketList.setCellRenderer(new TicketListRenderer());
         panel.add(new JScrollPane(ticketList), BorderLayout.CENTER);
-
         JButton viewTicketButton = new JButton("View Selected E-Ticket");
         viewTicketButton.setFont(new Font("SansSerif", Font.BOLD, 14));
         viewTicketButton.addActionListener(e -> viewTicket());
         panel.add(viewTicketButton, BorderLayout.SOUTH);
-        
         return panel;
     }
-    private void updateWalletLabel() { 
-        walletLabel.setText("Wallet: " + NumberFormat.getCurrencyInstance(Locale.US).format(currentUser.getWalletBalanceUSD()));
-    }
-    private void updateUIForSelectedGP() {
-        GrandPrix selectedGP = (GrandPrix) gpSelector.getSelectedItem();
-        if (selectedGP == null) return;
+
+    private void updateUI() {
         try {
-            BufferedImage img = ImageIO.read(new File(selectedGP.getImagePath()));
+            BufferedImage img = ImageIO.read(new File(currentGP.getImagePath()));
             Image scaledImg = img.getScaledInstance(800, -1, Image.SCALE_SMOOTH);
             trackImageLabel.setIcon(new ImageIcon(scaledImg));
         } catch (IOException e) {
             trackImageLabel.setIcon(null);
-            trackImageLabel.setText("Image not found: " + selectedGP.getImagePath());
-            e.printStackTrace();
+            trackImageLabel.setText("Image not found: " + currentGP.getImagePath());
         }
         areaSelector.removeAllItems();
-        selectedGP.getSeatingAreas().forEach(areaSelector::addItem);
+        List<SeatingArea> areas = DataManager.getSeatingAreasForGP(currentGP.getName());
+        for (SeatingArea area : areas) {
+            areaSelector.addItem(area);
+        }
         updatePrice();
     }
+
+    private void updateMyBookingsTab() {
+        ticketListModel.clear();
+        List<Ticket> tickets = DataManager.getTicketsForUser(currentUser.getEmail());
+        for (Ticket t : tickets) {
+            ticketListModel.addElement(t);
+        }
+    }
+
     private void updatePrice() {
         SeatingArea selectedArea = (SeatingArea) areaSelector.getSelectedItem();
         int ticketCount = (int) ticketSpinner.getValue();
@@ -637,30 +749,11 @@ class MainFrame extends JFrame {
         double totalUsd = totalInr * INR_TO_USD_RATE;
         priceLabel.setText("Total: " + NumberFormat.getCurrencyInstance(Locale.US).format(totalUsd));
     }
-    private void processBooking() {
-        SeatingArea area = (SeatingArea) areaSelector.getSelectedItem();
-        int count = (int) ticketSpinner.getValue();
-        if (area == null) return;
-        double totalUsd = area.getPriceINR() * count * INR_TO_USD_RATE;
-        if (currentUser.getWalletBalanceUSD() < totalUsd) {
-            JOptionPane.showMessageDialog(this, "Insufficient funds.", "Payment Failed", JOptionPane.ERROR_MESSAGE);
-            return;
-        }
-        int choice = JOptionPane.showConfirmDialog(this, "Confirm booking for " + NumberFormat.getCurrencyInstance(Locale.US).format(totalUsd) + "?", "Confirm", JOptionPane.YES_NO_OPTION);
-        if (choice == JOptionPane.YES_OPTION) {
-            currentUser.deductFromWallet(totalUsd);
-            Ticket newTicket = new Ticket(((GrandPrix)gpSelector.getSelectedItem()).getName(), area.getName(), count, totalUsd);
-            currentUser.addBookedTicket(newTicket);
-            updateWalletLabel();
-            updateMyBookingsTab();
-            JOptionPane.showMessageDialog(this, "Booking successful!", "Success", JOptionPane.INFORMATION_MESSAGE);
-            tabbedPane.setSelectedIndex(1);
-        }
+
+    private void updateWalletLabel() {
+        walletLabel.setText("Wallet: " + NumberFormat.getCurrencyInstance(Locale.US).format(currentUser.getWalletBalanceUSD()));
     }
-    private void updateMyBookingsTab() {
-        ticketListModel.clear();
-        currentUser.getBookedTickets().forEach(ticketListModel::addElement);
-    }
+    
     private void viewTicket() {
         Ticket selected = ticketList.getSelectedValue();
         if (selected == null) {
@@ -669,20 +762,50 @@ class MainFrame extends JFrame {
         }
         new TicketFrame(currentUser, selected).setVisible(true);
     }
+
+    private void processBooking() {
+        SeatingArea area = (SeatingArea) areaSelector.getSelectedItem();
+        int count = (int) ticketSpinner.getValue();
+        if (area == null || area.isSoldOut()) {
+            JOptionPane.showMessageDialog(this, "This seating area is sold out.", "Booking Error", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+        if (count > area.getTicketsLeft()) {
+            JOptionPane.showMessageDialog(this, "Not enough tickets available. Only " + area.getTicketsLeft() + " left.", "Booking Error", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+        double totalUsd = area.getPriceINR() * count * INR_TO_USD_RATE;
+        if (currentUser.getWalletBalanceUSD() < totalUsd) {
+            JOptionPane.showMessageDialog(this, "Insufficient funds.", "Payment Failed", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+        int choice = JOptionPane.showConfirmDialog(this, "Confirm booking?", "Confirm", JOptionPane.YES_NO_OPTION);
+        if (choice == JOptionPane.YES_OPTION) {
+            if (DataManager.bookTicket(currentUser, area, count, totalUsd)) {
+                updateWalletLabel();
+                updateMyBookingsTab();
+                updateUI();
+                JOptionPane.showMessageDialog(this, "Booking successful!", "Success", JOptionPane.INFORMATION_MESSAGE);
+                tabbedPane.setSelectedIndex(1);
+            } else {
+                JOptionPane.showMessageDialog(this, "Booking failed due to a database error.", "Error", JOptionPane.ERROR_MESSAGE);
+            }
+        }
+    }
+
     private JLabel createStyledLabel(String text) {
         JLabel label = new JLabel(text);
-        label.setFont(new Font("SansSerif", Font.BOLD, 16));
+        label.setFont(new Font("SansSerif", Font.BOLD, 18));
         return label;
     }
 }
 
 // =================================================================================
-// 6. GUI - E-Ticket Frame (UPDATED)
+// 5. Other GUI Classes
 // =================================================================================
 class TicketFrame extends JFrame {
     private final JPanel mainPanel;
     private final Ticket ticket;
-
     public TicketFrame(User user, Ticket ticket) {
         this.ticket = ticket;
         setTitle("Your E-Ticket: " + ticket.getGrandPrixName());
@@ -690,25 +813,20 @@ class TicketFrame extends JFrame {
         setLocationRelativeTo(null);
         setResizable(false);
         setDefaultCloseOperation(JFrame.DISPOSE_ON_CLOSE);
-
         mainPanel = new JPanel(new BorderLayout());
         mainPanel.setBackground(Color.WHITE);
-        
         JPanel headerPanel = new JPanel();
         headerPanel.setBackground(new Color(20, 20, 40));
         headerPanel.setBorder(new EmptyBorder(10, 10, 10, 10));
-        JLabel headerLabel = new JLabel("TICKETS"); // <-- UPDATED
+        JLabel headerLabel = new JLabel("TICKETS");
         headerLabel.setFont(new Font("Arial", Font.BOLD, 28));
         headerLabel.setForeground(Color.WHITE);
         headerPanel.add(headerLabel);
         mainPanel.add(headerPanel, BorderLayout.NORTH);
-
         JPanel detailsPanel = createTicketDetailsPanel(user, ticket);
         mainPanel.add(detailsPanel, BorderLayout.CENTER);
-
         JPanel footerPanel = createFooterPanel();
         mainPanel.add(footerPanel, BorderLayout.SOUTH);
-
         add(mainPanel);
     }
 
@@ -716,11 +834,9 @@ class TicketFrame extends JFrame {
         JPanel panel = new JPanel(new BorderLayout(10, 10));
         panel.setBorder(new EmptyBorder(20, 20, 20, 20));
         panel.setBackground(Color.WHITE);
-        
         JPanel infoPanel = new JPanel();
         infoPanel.setLayout(new BoxLayout(infoPanel, BoxLayout.Y_AXIS));
         infoPanel.setOpaque(false);
-
         infoPanel.add(createDetailRow("Purchaser:", user.getName()));
         infoPanel.add(Box.createVerticalStrut(15));
         infoPanel.add(createDetailRow("Event:", ticket.getGrandPrixName()));
@@ -731,69 +847,51 @@ class TicketFrame extends JFrame {
         infoPanel.add(Box.createVerticalStrut(15));
         SimpleDateFormat sdf = new SimpleDateFormat("EEE, dd MMM yyyy");
         infoPanel.add(createDetailRow("Date:", sdf.format(ticket.getBookingDate())));
-
         JPanel serialPanel = new JPanel(new BorderLayout());
         serialPanel.setOpaque(false);
         serialPanel.setBorder(BorderFactory.createTitledBorder("Serial Number"));
-
         JLabel serialLabel = new JLabel(ticket.getTicketId(), SwingConstants.CENTER);
         serialLabel.setFont(new Font("Monospaced", Font.BOLD, 18));
         serialPanel.add(serialLabel, BorderLayout.CENTER);
-
         panel.add(infoPanel, BorderLayout.CENTER);
         panel.add(serialPanel, BorderLayout.EAST);
-
         return panel;
     }
 
     private JPanel createFooterPanel() {
         JPanel outerPanel = new JPanel();
         outerPanel.setLayout(new BoxLayout(outerPanel, BoxLayout.Y_AXIS));
-
         JPanel contentPanel = new JPanel(new BorderLayout(15, 0));
         contentPanel.setBorder(new EmptyBorder(10, 20, 10, 20));
         contentPanel.setBackground(new Color(240, 240, 240));
-
         JPanel infoPanel = new JPanel();
         infoPanel.setBackground(new Color(20, 20, 40));
         infoPanel.setBorder(new EmptyBorder(10,10,10,10));
-        JTextArea termsText = new JTextArea(
-            "IMPORTANT INFORMATION:\n\n" +
-            "1. This ticket is non-transferable.\n" +
-            "2. Gates open 2 hours before the race.\n" +
-            "3. No outside food or beverages allowed.\n" +
-            "4. All sales are final. No refunds.\n" +
-            "5. Entry subject to security screening."
-        );
+        JTextArea termsText = new JTextArea("IMPORTANT INFORMATION:\n\n1. This ticket is non-transferable.\n2. Gates open 2 hours before the race.\n3. No outside food or beverages allowed.\n4. All sales are final. No refunds.\n5. Entry subject to security screening.");
         termsText.setEditable(false);
         termsText.setLineWrap(true);
         termsText.setWrapStyleWord(true);
         termsText.setBackground(new Color(20, 20, 40));
         termsText.setForeground(Color.WHITE);
         infoPanel.add(termsText);
-
         JLabel imageLabel = new JLabel();
         try {
-            BufferedImage img = ImageIO.read(new File("assets/cover image.jpg")); // <-- UPDATED
+            BufferedImage img = ImageIO.read(new File("assets/cover image.jpg"));
             Image scaledImg = img.getScaledInstance(150, -1, Image.SCALE_SMOOTH);
             imageLabel.setIcon(new ImageIcon(scaledImg));
         } catch (IOException e) {
             imageLabel.setText("Image not found");
         }
-
         contentPanel.add(infoPanel, BorderLayout.CENTER);
         contentPanel.add(imageLabel, BorderLayout.EAST);
-
         JButton saveButton = new JButton("Save as Picture");
         saveButton.setFont(new Font("SansSerif", Font.BOLD, 16));
         saveButton.setAlignmentX(Component.CENTER_ALIGNMENT);
         saveButton.addActionListener(e -> saveTicketAsImage());
-
         outerPanel.add(contentPanel);
         outerPanel.add(Box.createVerticalStrut(10));
         outerPanel.add(saveButton);
         outerPanel.add(Box.createVerticalStrut(10));
-
         return outerPanel;
     }
 
@@ -814,23 +912,18 @@ class TicketFrame extends JFrame {
         JFileChooser fileChooser = new JFileChooser();
         fileChooser.setDialogTitle("Save Ticket as PNG");
         fileChooser.setSelectedFile(new File(ticket.getGrandPrixName().replace(" ", "_") + "_Ticket.png"));
-
         int userSelection = fileChooser.showSaveDialog(this);
-
         if (userSelection == JFileChooser.APPROVE_OPTION) {
             File fileToSave = fileChooser.getSelectedFile();
-            
             BufferedImage image = new BufferedImage(mainPanel.getWidth(), mainPanel.getHeight(), BufferedImage.TYPE_INT_ARGB);
             Graphics2D g2d = image.createGraphics();
             mainPanel.paint(g2d);
             g2d.dispose();
-
             try {
                 ImageIO.write(image, "png", fileToSave);
                 JOptionPane.showMessageDialog(this, "Ticket saved successfully as an image!", "Success", JOptionPane.INFORMATION_MESSAGE);
             } catch (IOException ex) {
                 JOptionPane.showMessageDialog(this, "Error saving image: " + ex.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
-                ex.printStackTrace();
             }
         }
     }
@@ -846,6 +939,24 @@ class TicketListRenderer extends DefaultListCellRenderer {
            label.setBackground(index % 2 == 0 ? new Color(240, 240, 240) : Color.WHITE);
         }
         return label;
+    }
+}
+
+class SeatingAreaRenderer extends DefaultListCellRenderer {
+    @Override
+    public Component getListCellRendererComponent(JList list, Object value, int index, boolean isSelected, boolean cellHasFocus) {
+        super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus);
+        if (value instanceof SeatingArea) {
+            SeatingArea area = (SeatingArea) value;
+            if (area.isSoldOut()) {
+                setEnabled(false);
+                setForeground(Color.GRAY);
+            } else {
+                setEnabled(true);
+                setForeground(Color.BLACK);
+            }
+        }
+        return this;
     }
 }
 
