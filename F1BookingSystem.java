@@ -1,6 +1,3 @@
-import javax.imageio.ImageIO;
-import javax.swing.*;
-import javax.swing.border.EmptyBorder;
 import java.awt.*;
 import java.awt.event.FocusAdapter;
 import java.awt.event.FocusEvent;
@@ -16,6 +13,9 @@ import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
+import javax.imageio.ImageIO;
+import javax.swing.*;
+import javax.swing.border.EmptyBorder;
 
 // =================================================================================
 // 1. Main Application Runner
@@ -474,8 +474,8 @@ class AuthFrame extends JFrame {
         String email = loginEmailField.getText();
         String password = new String(loginPasswordField.getPassword());
         if (email.equals("your.email@example.com") || password.equals("Password")) {
-             JOptionPane.showMessageDialog(this, "Please enter your credentials.", "Login Error", JOptionPane.ERROR_MESSAGE);
-             return;
+              JOptionPane.showMessageDialog(this, "Please enter your credentials.", "Login Error", JOptionPane.ERROR_MESSAGE);
+              return;
         }
         User user = DataManager.authenticateUser(email, password);
         if (user != null) {
@@ -492,8 +492,8 @@ class AuthFrame extends JFrame {
         String password = new String(suPasswordField.getPassword());
         if (name.isEmpty() || email.isEmpty() || password.isEmpty() || 
             name.equals("Your Name") || email.equals("your.email@example.com") || password.equals("Password")) {
-             JOptionPane.showMessageDialog(this, "All fields are required.", "Signup Error", JOptionPane.ERROR_MESSAGE);
-             return;
+              JOptionPane.showMessageDialog(this, "All fields are required.", "Signup Error", JOptionPane.ERROR_MESSAGE);
+              return;
         }
         if (DataManager.registerUser(name, email, password)) {
             JOptionPane.showMessageDialog(this, "Registration successful! Please login.", "Success", JOptionPane.INFORMATION_MESSAGE);
@@ -795,7 +795,15 @@ class BookingFrame extends JFrame {
             JOptionPane.showMessageDialog(this, "Please select a ticket from the list first.", "No Ticket Selected", JOptionPane.WARNING_MESSAGE);
             return;
         }
-        new TicketFrame(currentUser, selected).setVisible(true);
+        // To get the GrandPrix object for the selected ticket
+        GrandPrix selectedGP = null;
+        for (GrandPrix gp : DataManager.getAllGrandPrix()) {
+            if (gp.getName().equals(selected.getGrandPrixName())) {
+                selectedGP = gp;
+                break;
+            }
+        }
+        new TicketFrame(currentUser, selected, selectedGP).setVisible(true);
     }
 
     private void processBooking() {
@@ -841,7 +849,7 @@ class BookingFrame extends JFrame {
 class TicketFrame extends JFrame {
     private final JPanel ticketContentPanel; // Panel that holds the ticket content
     private final Ticket ticket;
-    public TicketFrame(User user, Ticket ticket) {
+    public TicketFrame(User user, Ticket ticket, GrandPrix gp) {
         this.ticket = ticket;
         setTitle("Your E-Ticket: " + ticket.getGrandPrixName());
         setSize(500, 750);
@@ -863,7 +871,7 @@ class TicketFrame extends JFrame {
         headerPanel.add(headerLabel);
         ticketContentPanel.add(headerPanel, BorderLayout.NORTH);
         
-        JPanel detailsPanel = createTicketDetailsPanel(user, ticket);
+        JPanel detailsPanel = createTicketDetailsPanel(user, ticket, gp);
         ticketContentPanel.add(detailsPanel, BorderLayout.CENTER);
         
         JPanel footerPanel = createFooterPanel();
@@ -883,33 +891,38 @@ class TicketFrame extends JFrame {
         add(mainPanel);
     }
 
-    private JPanel createTicketDetailsPanel(User user, Ticket ticket) {
+    private JPanel createTicketDetailsPanel(User user, Ticket ticket, GrandPrix gp) {
         JPanel panel = new JPanel(new BorderLayout(10, 10));
         panel.setBorder(new EmptyBorder(20, 20, 20, 20));
         panel.setBackground(Color.WHITE);
-        JPanel infoPanel = new JPanel();
-        infoPanel.setLayout(new BoxLayout(infoPanel, BoxLayout.Y_AXIS));
-        infoPanel.setOpaque(false);
-        infoPanel.add(createDetailRow("Purchaser:", user.getName()));
-        infoPanel.add(Box.createVerticalStrut(15));
-        infoPanel.add(createDetailRow("Event:", ticket.getGrandPrixName()));
-        infoPanel.add(Box.createVerticalStrut(15));
-        infoPanel.add(createDetailRow("Event Date:", ticket.getRaceDate()));
-        infoPanel.add(Box.createVerticalStrut(15));
-        infoPanel.add(createDetailRow("Seat:", ticket.getSeatingAreaName()));
-        infoPanel.add(Box.createVerticalStrut(15));
-        infoPanel.add(createDetailRow("Quantity:", String.valueOf(ticket.getTicketCount())));
-        infoPanel.add(Box.createVerticalStrut(15));
-        SimpleDateFormat sdf = new SimpleDateFormat("EEE, dd MMM yyyy");
-        infoPanel.add(createDetailRow("Booked On:", sdf.format(ticket.getBookingDate())));
+
+        // Grid for details
+        JPanel infoGrid = new JPanel(new GridLayout(4, 2, 10, 5));
+        infoGrid.setOpaque(false);
+        infoGrid.add(createDetailRow("Purchaser:", user.getName()));
+        infoGrid.add(createDetailRow("Event:", ticket.getGrandPrixName()));
+        infoGrid.add(createDetailRow("Venue:", gp.getCountry()));
+        infoGrid.add(createDetailRow("Date:", ticket.getRaceDate()));
+        infoGrid.add(createDetailRow("Seat:", ticket.getSeatingAreaName()));
+        infoGrid.add(createDetailRow("Quantity:", String.valueOf(ticket.getTicketCount())));
+        infoGrid.add(createDetailRow("Total Price:", NumberFormat.getCurrencyInstance(Locale.US).format(ticket.getTotalPriceUSD())));
+        
+        // Serial number panel below the grid
         JPanel serialPanel = new JPanel(new BorderLayout());
-        serialPanel.setOpaque(false);
         serialPanel.setBorder(BorderFactory.createTitledBorder("Serial Number"));
         JLabel serialLabel = new JLabel(ticket.getTicketId(), SwingConstants.CENTER);
         serialLabel.setFont(new Font("Monospaced", Font.BOLD, 18));
         serialPanel.add(serialLabel, BorderLayout.CENTER);
-        panel.add(infoPanel, BorderLayout.CENTER);
-        panel.add(serialPanel, BorderLayout.EAST);
+        
+        // Main details panel with the grid and serial number
+        JPanel mainDetailsPanel = new JPanel();
+        mainDetailsPanel.setLayout(new BoxLayout(mainDetailsPanel, BoxLayout.Y_AXIS));
+        mainDetailsPanel.add(infoGrid);
+        mainDetailsPanel.add(Box.createVerticalStrut(20)); // Spacing
+        mainDetailsPanel.add(serialPanel);
+        
+        panel.add(mainDetailsPanel, BorderLayout.NORTH);
+        
         return panel;
     }
 
@@ -917,16 +930,24 @@ class TicketFrame extends JFrame {
         JPanel contentPanel = new JPanel(new BorderLayout(15, 0));
         contentPanel.setBorder(new EmptyBorder(10, 20, 10, 20));
         contentPanel.setBackground(new Color(240, 240, 240));
-        JPanel infoPanel = new JPanel();
-        infoPanel.setBackground(new Color(20, 20, 40));
-        infoPanel.setBorder(new EmptyBorder(10,10,10,10));
-        JTextArea termsText = new JTextArea("IMPORTANT INFORMATION:\n\n1. This ticket is non-transferable.\n2. Gates open 2 hours before the race.\n3. No outside food or beverages allowed.\n4. All sales are final. No refunds.\n5. Entry subject to security screening.");
-        termsText.setEditable(false);
-        termsText.setLineWrap(true);
-        termsText.setWrapStyleWord(true);
-        termsText.setBackground(new Color(20, 20, 40));
-        termsText.setForeground(Color.WHITE);
-        infoPanel.add(termsText);
+        
+        JPanel termsPanel = new JPanel(new GridLayout(2, 1, 0, 5));
+        termsPanel.setOpaque(false);
+        JLabel termsTitle = new JLabel("IMPORTANT INFORMATION:");
+        termsTitle.setFont(new Font("SansSerif", Font.BOLD, 12));
+        termsTitle.setForeground(new Color(20, 20, 40));
+        termsPanel.add(termsTitle);
+        
+        JLabel terms1 = new JLabel("<html>1. This ticket is non-transferable.</html>");
+        terms1.setFont(new Font("SansSerif", Font.PLAIN, 12));
+        termsPanel.add(terms1);
+        
+        JLabel terms2 = new JLabel("<html>2. All sales are final. No refunds.</html>");
+        terms2.setFont(new Font("SansSerif", Font.PLAIN, 12));
+        termsPanel.add(terms2);
+        
+        contentPanel.add(termsPanel, BorderLayout.CENTER);
+        
         JLabel imageLabel = new JLabel();
         try {
             BufferedImage img = ImageIO.read(new File("assets/cover image.jpg"));
@@ -935,7 +956,6 @@ class TicketFrame extends JFrame {
         } catch (IOException e) {
             imageLabel.setText("Image not found");
         }
-        contentPanel.add(infoPanel, BorderLayout.CENTER);
         contentPanel.add(imageLabel, BorderLayout.EAST);
         return contentPanel;
     }
@@ -981,7 +1001,7 @@ class TicketListRenderer extends DefaultListCellRenderer {
         label.setBorder(new EmptyBorder(10, 15, 10, 15));
         label.setVerticalAlignment(SwingConstants.TOP);
         if(!isSelected) {
-           label.setBackground(index % 2 == 0 ? new Color(240, 240, 240) : Color.WHITE);
+            label.setBackground(index % 2 == 0 ? new Color(240, 240, 240) : Color.WHITE);
         }
         return label;
     }
@@ -1004,4 +1024,3 @@ class SeatingAreaRenderer extends DefaultListCellRenderer {
         return this;
     }
 }
-
