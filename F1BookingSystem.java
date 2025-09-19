@@ -87,17 +87,21 @@ class SeatingArea {
     public int getTicketsLeft() { return capacity - soldTickets; }
     public boolean isSoldOut() { return getTicketsLeft() <= 0; }
     @Override public String toString() {
+        NumberFormat inrFormat = NumberFormat.getCurrencyInstance(new Locale("en", "IN"));
         if (isSoldOut()) return String.format("%s - (SOLD OUT)", name);
-        return String.format("%s - ₹%,.0f (%d left)", name, priceINR, getTicketsLeft());
+        return String.format("%s - %s (%d left)", name, inrFormat.format(priceINR), getTicketsLeft());
     }
 }
 
 class GrandPrix {
-    private String name, country, imagePath;
-    public GrandPrix(String n, String c, String path) { this.name = n; this.country = c; this.imagePath = path; }
+    private String name, country, imagePath, date;
+    public GrandPrix(String n, String c, String path, String date) { 
+        this.name = n; this.country = c; this.imagePath = path; this.date = date; 
+    }
     public String getName() { return name; }
     public String getCountry() { return country; }
     public String getImagePath() { return imagePath; }
+    public String getDate() { return date; }
     @Override public String toString() { return name; }
 }
 
@@ -139,7 +143,7 @@ class DataManager {
     }
 
     private static void populateInitialData(Connection conn) throws SQLException {
-        // --- COMPREHENSIVELY UPDATED ---
+        // --- COMPREHENSIVELY UPDATED WITH ALL STANDS ---
         addSeatingArea(conn, "Abu Dhabi Grand Prix", "Main Grandstand", 350000, 5000);
         addSeatingArea(conn, "Abu Dhabi Grand Prix", "North Straight", 180000, 3000);
         addSeatingArea(conn, "Abu Dhabi Grand Prix", "North Grandstand", 185000, 3500);
@@ -293,16 +297,16 @@ class DataManager {
 
     public static List<GrandPrix> getAllGrandPrix() {
         List<GrandPrix> gpList = new ArrayList<>();
-        gpList.add(new GrandPrix("Abu Dhabi Grand Prix", "UAE", "tracks/abu dhabi track.jpg"));
-        gpList.add(new GrandPrix("Australian Grand Prix", "Australia", "tracks/australia track.jpg"));
-        gpList.add(new GrandPrix("Azerbaijan Grand Prix", "Azerbaijan", "tracks/azerbaijan track.jpg"));
-        gpList.add(new GrandPrix("Dutch Grand Prix", "Netherlands", "tracks/dutch track.jpg"));
-        gpList.add(new GrandPrix("Italian Grand Prix", "Italy", "tracks/italy track.jpg"));
-        gpList.add(new GrandPrix("Las Vegas Grand Prix", "USA", "tracks/las vegas track.jpg"));
-        gpList.add(new GrandPrix("Qatar Grand Prix", "Qatar", "tracks/qatar track.jpg"));
-        gpList.add(new GrandPrix("British Grand Prix", "UK", "tracks/silverstone track.jpg"));
-        gpList.add(new GrandPrix("Singapore Grand Prix", "Singapore", "tracks/singapore track.jpg"));
-        gpList.add(new GrandPrix("United States Grand Prix", "USA", "tracks/us track.jpg"));
+        gpList.add(new GrandPrix("Abu Dhabi Grand Prix", "UAE", "tracks/abu dhabi track.jpg", "Dec 06-08"));
+        gpList.add(new GrandPrix("Australian Grand Prix", "Australia", "tracks/australia track.jpg", "Mar 21-23"));
+        gpList.add(new GrandPrix("Azerbaijan Grand Prix", "Azerbaijan", "tracks/azerbaijan track.jpg", "Sep 13-15"));
+        gpList.add(new GrandPrix("Dutch Grand Prix", "Netherlands", "tracks/dutch track.jpg", "Aug 29-31"));
+        gpList.add(new GrandPrix("Italian Grand Prix", "Italy", "tracks/italy track.jpg", "Sep 05-07"));
+        gpList.add(new GrandPrix("Las Vegas Grand Prix", "USA", "tracks/las vegas track.jpg", "Nov 20-22"));
+        gpList.add(new GrandPrix("Qatar Grand Prix", "Qatar", "tracks/qatar track.jpg", "Nov 28-30"));
+        gpList.add(new GrandPrix("British Grand Prix", "UK", "tracks/silverstone track.jpg", "Jul 04-06"));
+        gpList.add(new GrandPrix("Singapore Grand Prix", "Singapore", "tracks/singapore track.jpg", "Oct 03-05"));
+        gpList.add(new GrandPrix("United States Grand Prix", "USA", "tracks/us track.jpg", "Oct 17-19"));
         return gpList;
     }
 
@@ -579,21 +583,46 @@ class CalendarFrame extends JFrame {
         header.setFont(new Font("Arial", Font.BOLD, 32));
         mainPanel.add(header, BorderLayout.NORTH);
         
-        JPanel calendarGrid = new JPanel(new GridLayout(0, 1, 15, 15));
+        JPanel calendarGrid = new JPanel();
+        calendarGrid.setLayout(new BoxLayout(calendarGrid, BoxLayout.Y_AXIS));
+
         List<GrandPrix> allGPs = DataManager.getAllGrandPrix();
         for (GrandPrix gp : allGPs) {
-            JButton gpButton = new JButton(String.format("<html><div style='text-align: left; padding: 5px;'>%s<br><font size='-1' color='gray'>%s</font></div></html>", gp.getName(), gp.getCountry()));
-            gpButton.setFont(new Font("Arial", Font.BOLD, 18));
+            JButton gpButton = new JButton();
+            gpButton.setLayout(new BorderLayout());
             gpButton.setFocusPainted(false);
-            gpButton.setHorizontalAlignment(SwingConstants.LEFT);
             gpButton.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
             gpButton.setPreferredSize(new Dimension(100, 70));
+            gpButton.setMaximumSize(new Dimension(Integer.MAX_VALUE, 70));
+
+            JPanel textPanel = new JPanel(new GridLayout(2,1));
+            textPanel.setOpaque(false);
+            JLabel nameLabel = new JLabel(gp.getName());
+            nameLabel.setFont(new Font("Arial", Font.BOLD, 18));
+            JLabel infoLabel = new JLabel(gp.getCountry() + "  |  " + gp.getDate());
+            infoLabel.setForeground(Color.DARK_GRAY);
+            infoLabel.setFont(new Font("Arial", Font.PLAIN, 14));
+            textPanel.add(nameLabel);
+            textPanel.add(infoLabel);
+            gpButton.add(textPanel, BorderLayout.CENTER);
+
+            JLabel availableLabel = new JLabel(" Seats Available ");
+            availableLabel.setOpaque(true);
+            availableLabel.setBackground(new Color(46, 204, 113));
+            availableLabel.setForeground(Color.WHITE);
+            availableLabel.setFont(new Font("Arial", Font.BOLD, 12));
+            gpButton.add(availableLabel, BorderLayout.EAST);
+            
             gpButton.addActionListener(e -> {
                 new BookingFrame(currentUser, gp).setVisible(true);
             });
             calendarGrid.add(gpButton);
+            calendarGrid.add(Box.createVerticalStrut(10));
         }
-        mainPanel.add(new JScrollPane(calendarGrid), BorderLayout.CENTER);
+        
+        JScrollPane scrollPane = new JScrollPane(calendarGrid);
+        scrollPane.setBorder(null);
+        mainPanel.add(scrollPane, BorderLayout.CENTER);
         add(mainPanel);
     }
 }
@@ -804,7 +833,7 @@ class BookingFrame extends JFrame {
 // 5. Other GUI Classes
 // =================================================================================
 class TicketFrame extends JFrame {
-    private final JPanel mainPanel;
+    private final JPanel ticketContentPanel; // Panel that holds the ticket content
     private final Ticket ticket;
     public TicketFrame(User user, Ticket ticket) {
         this.ticket = ticket;
@@ -813,8 +842,12 @@ class TicketFrame extends JFrame {
         setLocationRelativeTo(null);
         setResizable(false);
         setDefaultCloseOperation(JFrame.DISPOSE_ON_CLOSE);
-        mainPanel = new JPanel(new BorderLayout());
-        mainPanel.setBackground(Color.WHITE);
+        
+        JPanel mainPanel = new JPanel(new BorderLayout()); 
+        
+        ticketContentPanel = new JPanel(new BorderLayout());
+        ticketContentPanel.setBackground(Color.WHITE);
+        
         JPanel headerPanel = new JPanel();
         headerPanel.setBackground(new Color(20, 20, 40));
         headerPanel.setBorder(new EmptyBorder(10, 10, 10, 10));
@@ -822,11 +855,25 @@ class TicketFrame extends JFrame {
         headerLabel.setFont(new Font("Arial", Font.BOLD, 28));
         headerLabel.setForeground(Color.WHITE);
         headerPanel.add(headerLabel);
-        mainPanel.add(headerPanel, BorderLayout.NORTH);
+        ticketContentPanel.add(headerPanel, BorderLayout.NORTH);
+        
         JPanel detailsPanel = createTicketDetailsPanel(user, ticket);
-        mainPanel.add(detailsPanel, BorderLayout.CENTER);
+        ticketContentPanel.add(detailsPanel, BorderLayout.CENTER);
+        
         JPanel footerPanel = createFooterPanel();
-        mainPanel.add(footerPanel, BorderLayout.SOUTH);
+        ticketContentPanel.add(footerPanel, BorderLayout.SOUTH);
+        
+        mainPanel.add(ticketContentPanel, BorderLayout.CENTER);
+
+        JButton saveButton = new JButton("Save as Picture");
+        saveButton.setFont(new Font("SansSerif", Font.BOLD, 16));
+        saveButton.addActionListener(e -> saveTicketAsImage());
+        
+        JPanel buttonPanel = new JPanel();
+        buttonPanel.setBorder(new EmptyBorder(10,10,10,10));
+        buttonPanel.add(saveButton);
+        mainPanel.add(buttonPanel, BorderLayout.SOUTH);
+        
         add(mainPanel);
     }
 
@@ -859,8 +906,6 @@ class TicketFrame extends JFrame {
     }
 
     private JPanel createFooterPanel() {
-        JPanel outerPanel = new JPanel();
-        outerPanel.setLayout(new BoxLayout(outerPanel, BoxLayout.Y_AXIS));
         JPanel contentPanel = new JPanel(new BorderLayout(15, 0));
         contentPanel.setBorder(new EmptyBorder(10, 20, 10, 20));
         contentPanel.setBackground(new Color(240, 240, 240));
@@ -884,15 +929,7 @@ class TicketFrame extends JFrame {
         }
         contentPanel.add(infoPanel, BorderLayout.CENTER);
         contentPanel.add(imageLabel, BorderLayout.EAST);
-        JButton saveButton = new JButton("Save as Picture");
-        saveButton.setFont(new Font("SansSerif", Font.BOLD, 16));
-        saveButton.setAlignmentX(Component.CENTER_ALIGNMENT);
-        saveButton.addActionListener(e -> saveTicketAsImage());
-        outerPanel.add(contentPanel);
-        outerPanel.add(Box.createVerticalStrut(10));
-        outerPanel.add(saveButton);
-        outerPanel.add(Box.createVerticalStrut(10));
-        return outerPanel;
+        return contentPanel;
     }
 
     private JPanel createDetailRow(String title, String value) {
@@ -915,9 +952,9 @@ class TicketFrame extends JFrame {
         int userSelection = fileChooser.showSaveDialog(this);
         if (userSelection == JFileChooser.APPROVE_OPTION) {
             File fileToSave = fileChooser.getSelectedFile();
-            BufferedImage image = new BufferedImage(mainPanel.getWidth(), mainPanel.getHeight(), BufferedImage.TYPE_INT_ARGB);
+            BufferedImage image = new BufferedImage(ticketContentPanel.getWidth(), ticketContentPanel.getHeight(), BufferedImage.TYPE_INT_ARGB);
             Graphics2D g2d = image.createGraphics();
-            mainPanel.paint(g2d);
+            ticketContentPanel.paint(g2d);
             g2d.dispose();
             try {
                 ImageIO.write(image, "png", fileToSave);
