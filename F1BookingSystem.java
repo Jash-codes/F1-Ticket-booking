@@ -1,3 +1,6 @@
+import javax.imageio.ImageIO;
+import javax.swing.*;
+import javax.swing.border.EmptyBorder;
 import java.awt.*;
 import java.awt.event.FocusAdapter;
 import java.awt.event.FocusEvent;
@@ -13,9 +16,6 @@ import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
-import javax.imageio.ImageIO;
-import javax.swing.*;
-import javax.swing.border.EmptyBorder;
 
 // =================================================================================
 // 1. Main Application Runner
@@ -51,13 +51,13 @@ class User {
 }
 
 class Ticket {
-    private String ticketId, userEmail, grandPrixName, seatingAreaName;
+    private String ticketId, userEmail, grandPrixName, seatingAreaName, raceDate;
     private int ticketCount;
     private double totalPriceUSD;
     private Date bookingDate;
-    public Ticket(String id, String email, String gpName, String areaName, int count, double price, Date date) {
+    public Ticket(String id, String email, String gpName, String areaName, int count, double price, Date date, String raceDate) {
         this.ticketId = id; this.userEmail = email; this.grandPrixName = gpName; this.seatingAreaName = areaName;
-        this.ticketCount = count; this.totalPriceUSD = price; this.bookingDate = date;
+        this.ticketCount = count; this.totalPriceUSD = price; this.bookingDate = date; this.raceDate = raceDate;
     }
     public String getGrandPrixName() { return grandPrixName; }
     public String getSeatingAreaName() { return seatingAreaName; }
@@ -65,6 +65,7 @@ class Ticket {
     public double getTotalPriceUSD() { return totalPriceUSD; }
     public Date getBookingDate() { return bookingDate; }
     public String getTicketId() { return ticketId; }
+    public String getRaceDate() { return raceDate; }
     @Override public String toString() {
         SimpleDateFormat sdf = new SimpleDateFormat("dd MMM yyyy");
         return String.format("<html><b>%s</b><br>%d x %s<br>Booked on: %s - Price: %s</html>",
@@ -87,9 +88,9 @@ class SeatingArea {
     public int getTicketsLeft() { return capacity - soldTickets; }
     public boolean isSoldOut() { return getTicketsLeft() <= 0; }
     @Override public String toString() {
-        NumberFormat inrFormat = NumberFormat.getCurrencyInstance(new Locale("en", "IN"));
+        double priceUSD = priceINR * 0.012; // Using the project's conversion rate
         if (isSoldOut()) return String.format("%s - (SOLD OUT)", name);
-        return String.format("%s - %s (%d left)", name, inrFormat.format(priceINR), getTicketsLeft());
+        return String.format("%s - %s (%d left)", name, NumberFormat.getCurrencyInstance(Locale.US).format(priceUSD), getTicketsLeft());
     }
 }
 
@@ -125,7 +126,7 @@ class DataManager {
     public static void initializeDatabase() {
         String createUserTable = "CREATE TABLE IF NOT EXISTS users (email TEXT PRIMARY KEY, name TEXT NOT NULL, password TEXT NOT NULL, wallet_balance REAL NOT NULL);";
         String createSeatingAreaTable = "CREATE TABLE IF NOT EXISTS seating_areas (unique_id TEXT PRIMARY KEY, gp_name TEXT NOT NULL, area_name TEXT NOT NULL, price_inr REAL NOT NULL, capacity INTEGER NOT NULL, sold_tickets INTEGER NOT NULL);";
-        String createTicketsTable = "CREATE TABLE IF NOT EXISTS tickets (ticket_id TEXT PRIMARY KEY, user_email TEXT NOT NULL, gp_name TEXT NOT NULL, seating_area TEXT NOT NULL, ticket_count INTEGER NOT NULL, total_price_usd REAL NOT NULL, booking_date INTEGER NOT NULL, FOREIGN KEY (user_email) REFERENCES users (email));";
+        String createTicketsTable = "CREATE TABLE IF NOT EXISTS tickets (ticket_id TEXT PRIMARY KEY, user_email TEXT NOT NULL, gp_name TEXT NOT NULL, seating_area TEXT NOT NULL, race_date TEXT NOT NULL, ticket_count INTEGER NOT NULL, total_price_usd REAL NOT NULL, booking_date INTEGER NOT NULL, FOREIGN KEY (user_email) REFERENCES users (email));";
 
         try (Connection conn = connect(); Statement stmt = conn.createStatement()) {
             stmt.execute(createUserTable);
@@ -332,7 +333,7 @@ class DataManager {
             pstmt.setString(1, email);
             ResultSet rs = pstmt.executeQuery();
             while (rs.next()) {
-                tickets.add(new Ticket(rs.getString("ticket_id"), rs.getString("user_email"), rs.getString("gp_name"), rs.getString("seating_area"), rs.getInt("ticket_count"), rs.getDouble("total_price_usd"), new Date(rs.getLong("booking_date"))));
+                tickets.add(new Ticket(rs.getString("ticket_id"), rs.getString("user_email"), rs.getString("gp_name"), rs.getString("seating_area"), rs.getInt("ticket_count"), rs.getDouble("total_price_usd"), new Date(rs.getLong("booking_date")), rs.getString("race_date")));
             }
         } catch (SQLException e) {
             e.printStackTrace();
@@ -340,8 +341,8 @@ class DataManager {
         return tickets;
     }
 
-    public static boolean bookTicket(User user, SeatingArea area, int count, double totalUsd) {
-        String insertTicketSQL = "INSERT INTO tickets(ticket_id, user_email, gp_name, seating_area, ticket_count, total_price_usd, booking_date) VALUES(?,?,?,?,?,?,?)";
+    public static boolean bookTicket(User user, SeatingArea area, int count, double totalUsd, String raceDate) {
+        String insertTicketSQL = "INSERT INTO tickets(ticket_id, user_email, gp_name, seating_area, ticket_count, total_price_usd, booking_date, race_date) VALUES(?,?,?,?,?,?,?,?)";
         String updateUserSQL = "UPDATE users SET wallet_balance = ? WHERE email = ?";
         String updateAreaSQL = "UPDATE seating_areas SET sold_tickets = sold_tickets + ? WHERE unique_id = ?";
         Connection conn = null;
@@ -356,6 +357,7 @@ class DataManager {
                 pstmt.setInt(5, count);
                 pstmt.setDouble(6, totalUsd);
                 pstmt.setLong(7, new Date().getTime());
+                pstmt.setString(8, raceDate);
                 pstmt.executeUpdate();
             }
             try (PreparedStatement pstmt = conn.prepareStatement(updateUserSQL)) {
@@ -589,11 +591,15 @@ class CalendarFrame extends JFrame {
         List<GrandPrix> allGPs = DataManager.getAllGrandPrix();
         for (GrandPrix gp : allGPs) {
             JButton gpButton = new JButton();
-            gpButton.setLayout(new BorderLayout());
+            gpButton.setLayout(new BorderLayout(10,0));
             gpButton.setFocusPainted(false);
             gpButton.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
             gpButton.setPreferredSize(new Dimension(100, 70));
             gpButton.setMaximumSize(new Dimension(Integer.MAX_VALUE, 70));
+            gpButton.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(Color.LIGHT_GRAY),
+                BorderFactory.createEmptyBorder(5, 10, 5, 10)
+            ));
 
             JPanel textPanel = new JPanel(new GridLayout(2,1));
             textPanel.setOpaque(false);
@@ -606,7 +612,7 @@ class CalendarFrame extends JFrame {
             textPanel.add(infoLabel);
             gpButton.add(textPanel, BorderLayout.CENTER);
 
-            JLabel availableLabel = new JLabel(" Seats Available ");
+            JLabel availableLabel = new JLabel(" SEATS AVAILABLE ");
             availableLabel.setOpaque(true);
             availableLabel.setBackground(new Color(46, 204, 113));
             availableLabel.setForeground(Color.WHITE);
@@ -810,7 +816,7 @@ class BookingFrame extends JFrame {
         }
         int choice = JOptionPane.showConfirmDialog(this, "Confirm booking?", "Confirm", JOptionPane.YES_NO_OPTION);
         if (choice == JOptionPane.YES_OPTION) {
-            if (DataManager.bookTicket(currentUser, area, count, totalUsd)) {
+            if (DataManager.bookTicket(currentUser, area, count, totalUsd, currentGP.getDate())) {
                 updateWalletLabel();
                 updateMyBookingsTab();
                 updateUI();
@@ -888,12 +894,14 @@ class TicketFrame extends JFrame {
         infoPanel.add(Box.createVerticalStrut(15));
         infoPanel.add(createDetailRow("Event:", ticket.getGrandPrixName()));
         infoPanel.add(Box.createVerticalStrut(15));
+        infoPanel.add(createDetailRow("Event Date:", ticket.getRaceDate()));
+        infoPanel.add(Box.createVerticalStrut(15));
         infoPanel.add(createDetailRow("Seat:", ticket.getSeatingAreaName()));
         infoPanel.add(Box.createVerticalStrut(15));
         infoPanel.add(createDetailRow("Quantity:", String.valueOf(ticket.getTicketCount())));
         infoPanel.add(Box.createVerticalStrut(15));
         SimpleDateFormat sdf = new SimpleDateFormat("EEE, dd MMM yyyy");
-        infoPanel.add(createDetailRow("Date:", sdf.format(ticket.getBookingDate())));
+        infoPanel.add(createDetailRow("Booked On:", sdf.format(ticket.getBookingDate())));
         JPanel serialPanel = new JPanel(new BorderLayout());
         serialPanel.setOpaque(false);
         serialPanel.setBorder(BorderFactory.createTitledBorder("Serial Number"));
